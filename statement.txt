@@ -1,0 +1,3 @@
+LLM USAGE:
+Part 2—Reliable Lock:
+We used Cursor tab some when writing the funcionality. We ended up turning it off after it kept suggesting full blocks of code (likely because this lab is already published online and in its training set), because we wanted the solution to be our own work. 

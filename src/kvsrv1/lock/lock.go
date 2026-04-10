@@ -1,6 +1,9 @@
 package lock
 
 import (
+	"fmt"
+
+	"6.5840/kvsrv1/rpc"
 	"6.5840/kvtest1"
 )
 
@@ -10,6 +13,10 @@ type Lock struct {
 	// Put and Get.  The tester passes the clerk in when calling
 	// MakeLock().
 	ck kvtest.IKVClerk
+	key string
+	held bool
+	// adding a version number to save a call
+	version rpc.Tversion
 	// You may add code here
 }
 
@@ -19,15 +26,38 @@ type Lock struct {
 // Use l as the key to store the "lock state" (you would have to decide
 // precisely what the lock state is).
 func MakeLock(ck kvtest.IKVClerk, l string) *Lock {
-	lk := &Lock{ck: ck}
-	// You may add code here
+	lk := &Lock{ck: ck, key: l}
+	ck.Put(l, "available", 0)
 	return lk
 }
 
-func (lk *Lock) Acquire() {
-	// Your code here
-}
+// IDEA: 
+// put whether or not the lock is held by someone as the value, check if lock exists and is held by someone
+// if not held, use version from get and call put. 
+// if held, loop? --> not sure how to do this, maybe look into golang sleep/wake
 
+func (lk *Lock) Acquire() {
+	for {
+	held, version, err := lk.ck.Get(lk.key)
+	if err != rpc.OK {
+		fmt.Println(err)
+	}
+	if held != "held" {
+		err = lk.ck.Put(lk.key, "held", version)
+		if err == rpc.OK {
+			lk.held = true
+			lk.version = version + 1
+			return
+		}
+	}
+	}
+}
+// if held, relase, else error
 func (lk *Lock) Release() {
-	// Your code here
+	if lk.held {
+		lk.held = false
+		lk.ck.Put(lk.key, "available", lk.version)
+	} else {
+		fmt.Println("release failed: lock not held")
+	}
 }
