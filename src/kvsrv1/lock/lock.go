@@ -15,9 +15,7 @@ type Lock struct {
 	ck kvtest.IKVClerk
 	key string
 	held bool
-	// adding a version number to save a call
 	version rpc.Tversion
-	// You may add code here
 }
 
 // The tester calls MakeLock() and passes in a k/v clerk; your code can
@@ -31,10 +29,6 @@ func MakeLock(ck kvtest.IKVClerk, l string) *Lock {
 	return lk
 }
 
-// IDEA: 
-// put whether or not the lock is held by someone as the value, check if lock exists and is held by someone
-// if not held, use version from get and call put. 
-// if held, loop? --> not sure how to do this, maybe look into golang sleep/wake
 
 func (lk *Lock) Acquire() {
 	for {
@@ -52,7 +46,6 @@ func (lk *Lock) Acquire() {
 	}
 	}
 }
-// if held, relase, else error
 func (lk *Lock) Release() {
 	if lk.held {
 		lk.held = false
