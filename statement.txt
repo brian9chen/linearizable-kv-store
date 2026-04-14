@@ -1,3 +1,6 @@
 LLM USAGE:
 Part 2—Reliable Lock:
 We used Cursor tab some when writing the funcionality. We ended up turning it off after it kept suggesting full blocks of code (likely because this lab is already published online and in its training set), because we wanted the solution to be our own work. 
+
+Part 4-Unreliable Lock: 
+We used Claude to help brainstorm and refine  lock.go Part 4 implementation. We reviewed, tested, and verified the final code ourselves to ensure it matches the assignment requirements.
