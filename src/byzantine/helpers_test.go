@@ -30,7 +30,7 @@ func serverName(i int) string {
 
 // raftCluster is an in-process Raft group (no tester daemon) for Byzantine tests.
 type raftCluster struct {
-	t *testing.T
+	tb testing.TB
 
 	n          int
 	net        *labrpc.Network
@@ -44,17 +44,28 @@ type raftCluster struct {
 	stopDrain chan struct{}
 }
 
-func newRaftCluster(t *testing.T, n int) *raftCluster {
-	t.Helper()
+func newRaftCluster(tb testing.TB, n int) *raftCluster {
+	return newRaftClusterMAC(tb, n, nil)
+}
+
+// newRaftClusterMAC enables HMAC-SHA256 on all RPC request bytes when macKey is non-nil.
+func newRaftClusterMAC(tb testing.TB, n int, macKey []byte) *raftCluster {
+	tb.Helper()
 	if n < 1 {
-		t.Fatal("n >= 1")
+		tb.Fatal("n >= 1")
 	}
 	net := labrpc.MakeNetwork()
 	net.Reliable(true)
 	net.LongDelays(false)
 
+	if len(macKey) > 0 {
+		m := NewMACManager(macKey)
+		net.SetOutboundInterceptor(m.WrapOutbound)
+		net.AddInboundInterceptor(m.VerifyInbound)
+	}
+
 	c := &raftCluster{
-		t:         t,
+		tb:        tb,
 		n:         n,
 		net:       net,
 		rfs:       make([]raftapi.Raft, n),
@@ -82,7 +93,7 @@ func newRaftCluster(t *testing.T, n int) *raftCluster {
 
 		r, ok := rf.(*raft.Raft)
 		if !ok {
-			t.Fatalf("unexpected Raft concrete type %T", rf)
+			tb.Fatalf("unexpected Raft concrete type %T", rf)
 		}
 		srv := labrpc.MakeServer()
 		srv.AddService(labrpc.MakeService(r))
@@ -110,7 +121,7 @@ func newRaftCluster(t *testing.T, n int) *raftCluster {
 }
 
 func (c *raftCluster) cleanup() {
-	c.t.Helper()
+	c.tb.Helper()
 	for i := 0; i < c.n; i++ {
 		if r, ok := c.rfs[i].(*raft.Raft); ok {
 			r.Kill()
@@ -139,7 +150,7 @@ func (c *raftCluster) cleanup() {
 }
 
 func (c *raftCluster) waitLeader(timeout time.Duration) (leader int, term int) {
-	c.t.Helper()
+	c.tb.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		leaders := 0
@@ -158,13 +169,13 @@ func (c *raftCluster) waitLeader(timeout time.Duration) (leader int, term int) {
 		}
 		time.Sleep(15 * time.Millisecond)
 	}
-	c.t.Fatal("no single leader within timeout")
+	c.tb.Fatal("no single leader within timeout")
 	return -1, -1
 }
 
 // submit tries Start(cmd) on each server until the leader accepts (with retries).
 func (c *raftCluster) submit(cmd int, timeout time.Duration) (index int) {
-	c.t.Helper()
+	c.tb.Helper()
 	deadline := time.Now().Add(timeout)
 	start := 0
 	for time.Now().Before(deadline) {
@@ -178,7 +189,7 @@ func (c *raftCluster) submit(cmd int, timeout time.Duration) (index int) {
 		time.Sleep(20 * time.Millisecond)
 		start++
 	}
-	c.t.Fatal("submit failed: no leader accepted command")
+	c.tb.Fatal("submit failed: no leader accepted command")
 	return -1
 }
 
@@ -190,7 +201,7 @@ func (c *raftCluster) committedAt(server, index int) (cmd any, ok bool) {
 }
 
 func (c *raftCluster) waitCommittedOnAll(index int, timeout time.Duration) {
-	c.t.Helper()
+	c.tb.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		nok := 0
@@ -204,7 +215,7 @@ func (c *raftCluster) waitCommittedOnAll(index int, timeout time.Duration) {
 		}
 		time.Sleep(15 * time.Millisecond)
 	}
-	c.t.Fatalf("index %d not applied on all servers", index)
+	c.tb.Fatalf("index %d not applied on all servers", index)
 }
 
 func decodeAppendEntriesArgs(b []byte) (raft.AppendEntriesArgs, error) {

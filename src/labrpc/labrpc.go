@@ -347,6 +347,12 @@ func (rn *Network) processReq(req reqMsg) {
 
 		req.args = rn.applyInboundInterceptors(req.endname, req.svcMeth, req.args)
 
+		// Interceptors may drop a request (e.g. MAC verification failure) by returning nil/empty args.
+		if len(req.args) == 0 {
+			req.replyCh <- replyMsg{false, nil}
+			return
+		}
+
 		// execute the request (call the RPC handler).
 		// in a separate thread so that we can periodically check
 		// if the server has been killed and the RPC should get a
