@@ -51,6 +51,7 @@ package labrpc
 
 import "6.5840/labgob"
 import "bytes"
+import "errors"
 import "reflect"
 import "sync"
 import "log"
@@ -94,6 +95,23 @@ func Unmarshall(b []byte, repl interface{}) {
 	}
 }
 
+// ErrDecode is returned by SafeUnmarshall when gob decoding fails (e.g. corrupted bytes).
+var ErrDecode = errors.New("labrpc: decode failed")
+
+// SafeUnmarshall decodes like Unmarshall but returns ErrDecode instead of crashing.
+func SafeUnmarshall(b []byte, repl interface{}) error {
+	rb := bytes.NewBuffer(b)
+	rd := labgob.NewDecoder(rb)
+	if err := rd.Decode(repl); err != nil {
+		return ErrDecode
+	}
+	return nil
+}
+
+// MsgInterceptor runs on RPC request bytes after Marshall (outbound) or before dispatch (inbound).
+// Return the (possibly modified) args slice; the network does not copy unless you allocate.
+type MsgInterceptor func(endname interface{}, svcMeth string, args []byte) []byte
+
 type Fcall func(string, string, []byte) ([]byte, bool)
 
 type ClientEnd struct {
@@ -101,6 +119,7 @@ type ClientEnd struct {
 	ch      chan reqMsg   // copy of Network.endCh
 	done    chan struct{} // closed when Network is cleaned up
 	callf   Fcall
+	net     *Network // set by MakeEnd; used for outbound interceptors
 }
 
 func (e *ClientEnd) SetCall(f Fcall) {
@@ -124,6 +143,14 @@ func (e *ClientEnd) Call(svcMeth string, args interface{}, reply interface{}) bo
 	req.svcMeth = svcMeth
 	req.replyCh = make(chan replyMsg)
 	req.args = Marshall(args)
+	if e.net != nil {
+		e.net.mu.Lock()
+		f := e.net.outboundInterceptor
+		e.net.mu.Unlock()
+		if f != nil {
+			req.args = f(e.endname, svcMeth, req.args)
+		}
+	}
 
 	//log.Printf("Call %v", req)
 
@@ -159,6 +186,14 @@ func (e *ClientEnd) Forward(svcMeth string, args []byte) ([]byte, bool) {
 	req.svcMeth = svcMeth
 	req.replyCh = make(chan replyMsg)
 	req.args = args
+	if e.net != nil {
+		e.net.mu.Lock()
+		f := e.net.outboundInterceptor
+		e.net.mu.Unlock()
+		if f != nil {
+			req.args = f(e.endname, svcMeth, req.args)
+		}
+	}
 
 	//log.Printf("forward %v", req)
 
@@ -193,6 +228,11 @@ type Network struct {
 	done           chan struct{} // closed when Network is cleaned up
 	count          int32         // total RPC count, for statistics
 	bytes          int64         // total bytes send, for statistics
+
+	// Outbound: runs in ClientEnd.Call/Forward after Marshall, before endCh.
+	outboundInterceptor MsgInterceptor
+	// Inbound: runs in processReq before server.dispatch (corruption, MAC verify, etc.).
+	inboundInterceptors []MsgInterceptor
 }
 
 func MakeNetwork() *Network {
@@ -305,6 +345,8 @@ func (rn *Network) processReq(req reqMsg) {
 			return
 		}
 
+		req.args = rn.applyInboundInterceptors(req.endname, req.svcMeth, req.args)
+
 		// execute the request (call the RPC handler).
 		// in a separate thread so that we can periodically check
 		// if the server has been killed and the RPC should get a
@@ -396,6 +438,7 @@ func (rn *Network) MakeEnd(endname interface{}) *ClientEnd {
 	e.endname = endname
 	e.ch = rn.endCh
 	e.done = rn.done
+	e.net = rn
 	rn.ends[endname] = e
 	rn.enabled[endname] = false
 	rn.connections[endname] = nil
@@ -475,6 +518,43 @@ func (rn *Network) GetTotalCount() int {
 func (rn *Network) GetTotalBytes() int64 {
 	x := atomic.LoadInt64(&rn.bytes)
 	return x
+}
+
+// SetOutboundInterceptor runs on marshalled RPC args before they enter the network (sender side).
+// Pass nil to disable.
+func (rn *Network) SetOutboundInterceptor(f MsgInterceptor) {
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+	rn.outboundInterceptor = f
+}
+
+// AddInboundInterceptor appends an interceptor run on request bytes in processReq before dispatch.
+func (rn *Network) AddInboundInterceptor(f MsgInterceptor) {
+	if f == nil {
+		return
+	}
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+	rn.inboundInterceptors = append(rn.inboundInterceptors, f)
+}
+
+// ClearInboundInterceptors removes all inbound interceptors (mainly for tests).
+func (rn *Network) ClearInboundInterceptors() {
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+	rn.inboundInterceptors = nil
+}
+
+func (rn *Network) applyInboundInterceptors(endname interface{}, svcMeth string, args []byte) []byte {
+	rn.mu.Lock()
+	fs := rn.inboundInterceptors
+	rn.mu.Unlock()
+	for _, f := range fs {
+		if f != nil {
+			args = f(endname, svcMeth, args)
+		}
+	}
+	return args
 }
 
 type Fdispatch func(string, []byte) ([]byte, bool)
@@ -591,7 +671,9 @@ func (svc *Service) dispatch(methname string, req reqMsg) replyMsg {
 		args := reflect.New(method.Type.In(1))
 
 		// decode the argument.
-		Unmarshall(req.args, args.Interface())
+		if err := SafeUnmarshall(req.args, args.Interface()); err != nil {
+			return replyMsg{false, nil}
+		}
 
 		// allocate space for the reply.
 		replyType := method.Type.In(2)
