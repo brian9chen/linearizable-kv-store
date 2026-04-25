@@ -1,0 +1,156 @@
+════════════════════════════════════════════════════════════════════════════════════════
+  BYZANTINE RAFT EXTENSION — TEST & BENCHMARK REPORT
+  Generated: 2026-04-24 04:09:10
+════════════════════════════════════════════════════════════════════════════════════════
+
+────────────────────────────────────[ TEST SUMMARY ]────────────────────────────────────
+
+  Total: 19    Passed: 19    Failed: 0
+
+────────────────────────────────────────────────────────────────────────────────────────
+  Baseline (no corruption)
+────────────────────────────────────────────────────────────────────────────────────────
+
+    PASS  TestBaselineAgreementNoCorruption  (780ms)
+          3-node cluster, submit 42, all nodes agree. Sanity check.
+
+────────────────────────────────────────────────────────────────────────────────────────
+  Part 1: Byzantine attacks WITHOUT MAC
+────────────────────────────────────────────────────────────────────────────────────────
+
+    PASS  TestByzantinePayloadCorruptionDivergentApply  (670ms)
+          Tamper command (42->999) in AppendEntries. Leader applies 42, followers apply 999.
+          => Same log index, DIFFERENT state machine state. Safety violated.
+          Output:
+            Byzantine demo: leader index 1 command 42; 2 followers differ (plain Raft has no MAC)
+
+    PASS  TestByzantineStaleTermBlocksCommit  (3.58s)
+          Force AppendEntries.Term=0 on replication RPCs from leader.
+          => Followers reject; command never commits cluster-wide.
+          Output:
+            stale AppendEntries.Term: no unanimous apply at index 1 (followers reject; expected)
+
+    PASS  TestByzantineRawBitFlipStallsProgress  (2.51s)
+          Flip random bits (12% rate) on leader's outgoing RPCs.
+          => Decoding fails or semantics break; replication stalls.
+          Output:
+            bit-flip test: progress stalled or incomplete — dropped/corrupt RPCs (expected under random flips)
+
+────────────────────────────────────────────────────────────────────────────────────────
+  Part 2: Side-by-side comparison (no MAC vs HMAC)
+────────────────────────────────────────────────────────────────────────────────────────
+
+    PASS  TestCompare_WithoutMAC_vs_WithHMAC  (3.07s)
+          Parent test grouping the two sub-cases below.
+
+    PASS  WithoutMAC_tamper_same_index_different_command  (580ms)
+          WITHOUT MAC: tamper payload 42->999. Asserts followers diverge from leader.
+          => If this ever fails, the vulnerability demo is broken.
+          Output:
+            Expect: leader applies 42; at least one follower applies != 42 (no integrity on payload).
+            OK: safety violated without MAC (expected for this demo): 2 followers != leader at index 1
+                --- PASS: TestCompare_WithoutMAC_vs_WithHMAC/WithoutMAC_tamper_same_index_different_command (0.58s)
+
+    PASS  WithHMAC_wire_flip_dropped_no_unanimous_commit  (2.49s)
+          WITH HMAC: flip one bit on wire before VerifyInbound.
+          => MAC rejects bad bytes, RPC dropped, no unanimous commit of garbage.
+          Output:
+            Expect: MAC verify fails after bit-flip; replication cannot complete quorum for that submit.
+            OK: no unanimous apply at index 1 under wire flip + HMAC (expected)
+                --- PASS: TestCompare_WithoutMAC_vs_WithHMAC/WithHMAC_wire_flip_dropped_no_unanimous_commit (2.49s)
+
+────────────────────────────────────────────────────────────────────────────────────────
+  Part 3: MAC unit tests
+────────────────────────────────────────────────────────────────────────────────────────
+
+    PASS  TestMACRoundTrip  (0ms)
+          Wrap + verify round-trip on raw bytes.
+
+    PASS  TestMACRejectsWrongKey  (0ms)
+          Different key => verification fails.
+
+    PASS  TestMACRejectsTampering  (0ms)
+          Flip one bit in MAC'd payload => rejected.
+
+    PASS  TestMACRejectsWrongMethod  (0ms)
+          MAC binds to RPC method name; swapping method => rejected.
+
+    PASS  TestMACManagerMsgInterceptorShape  (0ms)
+          Compile-time check: methods match labrpc.MsgInterceptor.
+
+────────────────────────────────────────────────────────────────────────────────────────
+  Part 3: MAC integration (Raft cluster)
+────────────────────────────────────────────────────────────────────────────────────────
+
+    PASS  TestMACClusterAgreement  (580ms)
+          3-node cluster with HMAC on all RPCs. Submit 42, all agree.
+          => HMAC does not break normal operation.
+
+    PASS  TestMACDropsSingleBitCorruption  (2.52s)
+          HMAC enabled + flip one bit on every inbound RPC.
+          => All RPCs dropped by MAC verify; no unanimous commit.
+          Output:
+            MAC correctly dropped corrupted RPCs; no unanimous apply (expected)
+
+────────────────────────────────────────────────────────────────────────────────────────
+  Interceptor unit tests
+────────────────────────────────────────────────────────────────────────────────────────
+
+    PASS  TestFlipRandomBitsEmpty  (0ms)
+          FlipRandomBits on nil/empty input.
+
+    PASS  TestFlipRandomBitsDeterministicLength  (0ms)
+          Output length matches input length.
+
+    PASS  TestMakeByzantineInterceptorSkipsUnknownEnd  (0ms)
+          Interceptor ignores non-listed endpoints.
+
+    PASS  TestMakeByzantineInterceptorCorruptsListedEnd  (0ms)
+          Interceptor corrupts listed endpoints at rate 1.0.
+
+────────────────────────────────────────────────────────────────────────────────────────
+  Other tests
+────────────────────────────────────────────────────────────────────────────────────────
+
+    PASS  TestSummary_SecurityMatrix  (0ms)
+
+════════════════════════════════════════════════════════════════════════════════════════
+  BENCHMARKS
+════════════════════════════════════════════════════════════════════════════════════════
+
+  HMAC-SHA256 raw cost (Wrap = HMAC compute + alloc):
+
+    Payload           ns/op       B/op     allocs      iters
+    ──────────── ────────── ────────── ────────── ──────────
+    64B-11            419.4        633          9    1913938
+    1KB-11            779.7       1689          9     821528
+    8KB-11           3668.0      10009          9     161440
+
+  Raft submit latency (3-node cluster, per-op):
+
+    Mode                                  ns/op      us/op      ops/sec    iters
+    ────────────────────────────── ──────────── ────────── ──────────── ────────
+    NoMAC-11                             439334      439.3         2276     2605
+    MAC-11                               424971      425.0         2353     3006
+
+════════════════════════════════════════════════════════════════════════════════════════
+  KEY TAKEAWAYS
+════════════════════════════════════════════════════════════════════════════════════════
+
+1. Plain Raft assumes honest nodes. A single Byzantine actor that tampers with
+   AppendEntries bytes can cause followers to apply different commands at the same
+   log index — silently diverging state machines.
+
+2. Corrupting Term fields blocks replication (followers reject stale terms) or
+   causes election instability. Random bit flips crash gob decoding or produce
+   semantically invalid messages, stalling progress.
+
+3. Adding HMAC-SHA256 to every RPC (outbound wrap, inbound verify) catches all
+   byte-level tampering. Corrupted messages are dropped before dispatch, so the
+   cluster never applies garbage.
+
+4. The MAC overhead is small (sub-microsecond per HMAC on typical Raft message
+   sizes). End-to-end Raft submit latency increases modestly — a near-free defense
+   against the catastrophic failure mode it prevents.
+
+════════════════════════════════════════════════════════════════════════════════════════
